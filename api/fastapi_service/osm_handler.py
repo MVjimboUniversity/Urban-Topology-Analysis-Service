@@ -21,6 +21,8 @@ class HighwayWaysHandler(o.SimpleHandler):
         self.ways_tags = {}
 
     def way(self, w):
+        # if w.id == 86321243:
+        #     qwerty = 1
         if ('highway' in w.tags) and (w.tags.get('highway') in self.required_road_types):
             self.ways_tags[w.id] = {tag.k : tag.v for tag in w.tags}
             # if not 'name' in w.tags:
@@ -54,10 +56,10 @@ class HighwayNodesHandler(o.SimpleHandler):
 
 def parse_osm(osm_file_path) -> Tuple[dict, dict]:
     ways = HighwayWaysHandler()
-    try:
-        ways.apply_file(osm_file_path, locations=False)
-    except RuntimeError:
-        pass
+    # try
+    ways.apply_file(osm_file_path, locations=False)
+    # except RuntimeError:
+    #     pass
    
     nodes = HighwayNodesHandler(ways.used_nodes_ids)
     try:
