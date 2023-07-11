@@ -36,17 +36,20 @@ def get_db():
     finally:        
         db.close()
 
+
 def point_to_scheme(point : Point) -> PointBase:
     if point is None:
         return None
 
     return PointBase(latitude=point.latitude, longitude=point.longitude)
 
+
 def list_to_csv_str(data, columns : List['str']):
     buffer = io.StringIO()
     df = pd.DataFrame(data, columns=columns)
     df.to_csv(buffer, index=False)
     return buffer.getvalue(), df
+
 
 def reversed_graph_to_csv_str(edges_df : DataFrame):
     redges_df, rnodes_df = get_reversed_graph(edges_df, "id_way")
@@ -96,11 +99,13 @@ async def city_to_scheme(city : City) -> CityBase:
     
     return city_base
 
+
 async def cities_to_scheme_list(cities : List[City]) -> List[CityBase]:
     schemas = []
     for city in cities:
         schemas.append(await city_to_scheme(city=city))
     return schemas
+
 
 async def get_cities(page: int, per_page: int) -> List[CityBase]:
     query = CityAsync.select()
@@ -108,10 +113,12 @@ async def get_cities(page: int, per_page: int) -> List[CityBase]:
     cities = cities[page * per_page : (page + 1) * per_page]
     return await cities_to_scheme_list(cities)
 
+
 async def get_city(city_id: int) -> CityBase:
     query = CityAsync.select().where(CityAsync.c.id == city_id)
     city = await database.fetch_one(query)
     return await city_to_scheme(city=city)
+
 
 def add_info_to_db(city_df : DataFrame):
     city_name = city_df['Город']
@@ -126,7 +133,7 @@ def add_info_to_db(city_df : DataFrame):
         downloaded = city_db.downloaded
         city_id = city_db.id
     conn.close()
-    file_path = f'./data/cities_osm/{city_name}.osm.pbf'
+    file_path = f'./data/cities_osm/{city_name}.pbf'
     if (not downloaded) and (os.path.exists(file_path)):
         print("ANDO NOW IM HERE")
         add_graph_to_db(city_id=city_id, file_path=file_path, city_name=city_name)
@@ -144,7 +151,7 @@ def add_graph_to_db(city_id: int, file_path: str, city_name: str) -> None:
             required_road_types = ('motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'road', 'unclassified', 'residential',
                                    'motorway_link', 'trunk_link', 'primary_link', 'secondary_link', 'tertiary_link') # , 'residential','living_street'
             
-            road_file_path = file_path[:-8] + "_highway.osm.pbf"
+            road_file_path = file_path[:-8] + "_highway.pbf"
             command = f'''/osmosis/bin/osmosis --read-pbf-fast file="{file_path}" --tf accept-ways highway={",".join(required_road_types)} \
                           --tf reject-ways side_road=yes --used-node --write-pbf omitmetadata=true file="{road_file_path}" \
                           && /osmosis/bin/osmosis --read-pbf-fast file="{road_file_path}" --write-pgsimp authFile="{AUTH_FILE_PATH}" \
@@ -317,12 +324,14 @@ def add_point_to_db(df : DataFrame) -> int:
         session.flush()
         return point.id
 
+
 def add_property_to_db(df : DataFrame) -> int:
     with SessionLocal.begin() as session:
         property = CityProperty(c_latitude=df['Широта'], c_longitude=df['Долгота'], population=df['Население'], time_zone=df['Часовой пояс'])
         session.add(property)
         session.flush()
         return property.id
+
 
 def add_city_to_db(df : DataFrame, property_id : int) -> int:
     with SessionLocal.begin() as session:
@@ -331,78 +340,18 @@ def add_city_to_db(df : DataFrame, property_id : int) -> int:
         session.flush()
         return city.id
 
+
 def init_db(cities_info : DataFrame):
     for row in range(0, cities_info.shape[0]):
         add_info_to_db(cities_info.loc[row, :])
 
-
-# async def download_info(city : City, extension : float) -> bool:
-#     filePath = f'./data/graphs/{city}.osm.pbf'
-#     if os.path.isfile(filePath):
-#         print(f'Exists: {filePath}')
-#         return True
-#     else:
-#         print(f'Loading: {filePath}')
-#         query = {'city': city.city_name}
-#         try:
-#             city_info = ox.geocode_to_gdf(query)
-
-#             north = city_info.iloc[0]['bbox_north']  
-#             south = city_info.iloc[0]['bbox_south']
-#             delta = (north-south) * extension / 200
-#             north += delta
-#             south -= delta
-
-#             east = city_info.iloc[0]['bbox_east'] 
-#             west = city_info.iloc[0]['bbox_west']
-#             delta = (east-west) * extension / 200
-#             east += delta
-#             west -= delta
-
-#             G = ox.graph_from_bbox(north=north, south=south, east=east, west=west, simplify=True, network_type='drive',)
-#             ox.save_graph_xml(G, filepath=filePath)
-#             return True
-
-#         except ValueError:
-#             print('Invalid city name')
-#             return False
-
-# def delete_info(city : City) -> bool:
-#     filePath = f'./data/graphs/{city}.osm.pbf'
-#     if os.path.isfile(filePath):
-#         os.remove(filePath)
-#         print(f'Deleted: {filePath}')
-#         return True
-#     else:
-#         print(f"File doesn't exist: {filePath}")
-#         return False
-        
-
-# async def download_city(city_id : int, extension : float) -> CityBase:
-#     query = CityAsync.select().where(CityAsync.c.id == city_id)
-#     city = await database.fetch_one(query)
-#     if city is None:
-#         return None
-        
-#     city.downloaded = await download_info(city=city, extension=extension)
-
-#     return city_to_scheme(city=city)
-
-# async def delete_city(city_id : int) -> CityBase:
-#     query = CityAsync.select().where(CityAsync.c.id == city_id)
-#     city = await database.fetch_one(query)
-#     if city is None:
-#         return None
-        
-#     delete_info(city=city)
-#     city.downloaded = False
-#     return await city_to_scheme(city=city)
 
 def to_list(polygon : LineString):
     list = []
     for x, y in polygon.coords:
         list.append([x, y])
     return list
+
 
 def to_json_array(polygon):
     coordinates_list = []
@@ -416,6 +365,7 @@ def to_json_array(polygon):
 
     return coordinates_list
 
+
 def region_to_schemas(regions : GeoDataFrame, ids_list : List[int], admin_level : int) -> List[RegionBase]:
     regions_list = [] 
     polygons = regions[regions['osm_id'].isin(ids_list)]
@@ -428,6 +378,7 @@ def region_to_schemas(regions : GeoDataFrame, ids_list : List[int], admin_level 
 
     return regions_list
 
+
 def children(ids_list : List[int], admin_level : int, regions : GeoDataFrame):
     area = regions[regions['parents'].str.contains('|'.join(str(x) for x in ids_list), na=False)]
     area = area[area['admin_level']==admin_level]
@@ -435,6 +386,7 @@ def children(ids_list : List[int], admin_level : int, regions : GeoDataFrame):
     if len(lst) == 0:
         return ids_list, False
     return lst, True
+
 
 def get_admin_levels(city : City, regions : GeoDataFrame, cities : DataFrame) -> List[RegionBase]:
     regions_list = []
@@ -456,7 +408,6 @@ def get_admin_levels(city : City, regions : GeoDataFrame, cities : DataFrame) ->
     return regions_list
 
 
-
 def get_regions(city_id : int, regions : GeoDataFrame, cities : DataFrame) -> List[RegionBase]:
     with SessionLocal.begin() as session:
         city = session.query(City).get(city_id)
@@ -464,8 +415,10 @@ def get_regions(city_id : int, regions : GeoDataFrame, cities : DataFrame) -> Li
             return None
         return get_admin_levels(city=city, regions=regions, cities=cities)
 
+
 def list_to_polygon(polygons : List[List[List[float]]]):
     return unary_union([Polygon(polygon) for polygon in polygons])
+
 
 def polygons_from_region(regions_ids : List[int], regions : GeoDataFrame):
     if len(regions_ids) == 0:
@@ -473,20 +426,25 @@ def polygons_from_region(regions_ids : List[int], regions : GeoDataFrame):
     polygons = regions[regions['osm_id'].isin(regions_ids)]
     return unary_union([geom for geom in polygons['geometry'].values])
 
+
 async def graph_from_ids(city_id : int, regions_ids : List[int], regions : GeoDataFrame):
     polygon = polygons_from_region(regions_ids=regions_ids, regions=regions)
     if polygon == None:
         return None, None, None, None
     return await graph_from_poly(city_id=city_id, polygon=polygon)
-    
+
+
 def point_obj_to_list(db_record) -> List:
     return [db_record.id, db_record.longitude, db_record.latitude]
+
 
 def edge_obj_to_list(db_record) -> List:
     return [db_record.id, db_record.id_way, db_record.id_src, db_record.id_dist, db_record.value]
 
+
 def record_obj_to_wprop(record):
     return [record.id_way ,record.property ,record.value]
+
 
 def record_obj_to_pprop(record):
     return [record.id_point ,record.property ,record.value]
@@ -641,76 +599,8 @@ def filter_by_polygon(polygon, edges, points):
     return points_filtred, edges_filtred, ways_prop_ids, points_ids
 
 
-# nodata = '-'
-# merging_col = 'id_way'
-
-
-# def union_and_delete(graph: nx.Graph):
-#     edge_to_remove = list()
-
-#     for source, target, attributes in graph.edges(data=True):
-#         attributes['node_id'] = {source, target}
-#         attributes['cross_ways'] = set()
-#         try:
-#             for id1, id2, attr in graph.edges(data=True):
-#                 if source == id1 and target == id2:
-#                     continue
-#                 if (attributes[merging_col] == attr[merging_col] and attributes[merging_col] != nodata) \
-#                         and len(attributes['node_id'].intersection(attr['node_id'])):
-#                     attributes['node_id'] = attributes['node_id'].union(attr['node_id'])
-#                     attr['node_id'].clear()
-#                     edge_to_remove.append((id1, id2))
-#                 elif (attributes[merging_col] != attr[merging_col] or attributes[merging_col] == nodata) \
-#                         and len(attributes['node_id'].intersection({id1, id2})):
-#                     if attr[merging_col] != nodata:
-#                         attributes['cross_ways'].add(attr[merging_col])
-#                     else:
-#                         attributes['cross_ways'].add(str(id1) + str(nodata) + str(id2))
-#         except:
-#             continue
-
-#     graph.remove_edges_from(edge_to_remove)
-
-
-# def reverse_graph(graph):
-#     new_graph = nx.Graph()
-
-#     new_graph.add_nodes_from([(attr[merging_col], attr) if attr[merging_col] != nodata
-#                               else (str(source) + str(nodata) + str(target), attr)
-#                               for source, target, attr in graph.edges(data=True)])
-
-#     for node_id, attributes in new_graph.nodes(data=True):
-#         for id in new_graph.nodes():
-#             if id in attributes['cross_ways']:
-#                 new_graph.add_edge(node_id, id)
-
-#     return new_graph
-
-
-# def convert_to_df(graph: nx.Graph, source='source', target='target'):
-#     edges_df = nx.to_pandas_edgelist(graph, source='source_way', target='target_way')
-#     nodes_df = pd.DataFrame.from_dict(graph.nodes, orient='index')
-
-#     return edges_df, nodes_df
-
-
-# def get_reversed_graph(graph: DataFrame, source: str = 'source', target: str = 'target', merging_column: str ='way_id', empty_cell_sign: str = '-',
-#                        edge_attr: List[str] = ['way_id']):
-#     global nodata
-#     global merging_col
-#     nodata = empty_cell_sign
-#     merging_col = merging_column
-
-#     nx_graph = nx.from_pandas_edgelist(graph, source=source, target=target, edge_attr=edge_attr)
-#     adjacency_df = nx.to_pandas_adjacency(nx_graph, weight=merging_column, dtype=int)
-#     union_and_delete(nx_graph)
-
-#     new_graph = reverse_graph(nx_graph)
-#     edges_ds, nodes_df = convert_to_df(new_graph, source='source_way', target='target_way')
-#     return edges_ds, nodes_df, adjacency_df
-
 def squeeze_graph(df_original: DataFrame) -> DataFrame:
-    """Очишение исходного DataFrame от неименнованных таблиц и связывание именнованных улиц через неименнованные, путем зацикливания.
+    """Очистка исходного DataFrame от неименнованных улиц и связывание именнованных улиц через неименнованные.
     """
     df = df_original.copy(deep=True)
     df_streets_nan_right = df.loc[(df["street_name1"].notna()) & (df["street_name2"].isna())] # Связи с левой именнованной улицей и правой неименнованной
