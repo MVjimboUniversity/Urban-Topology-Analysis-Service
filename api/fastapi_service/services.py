@@ -187,29 +187,21 @@ def add_graph_to_db(city_id: int, file_path: str, city_name: str) -> None:
             # query = PointAsync.insert().from_select(["id", "longitude", "latitude"], select_query)
             res = conn.execute(query)
 
-            # Вставка в Properties для Ways
+            # Вставка в Properties
             query = text(
                 """INSERT INTO "Properties" (property)
-                SELECT DISTINCT wt.k
-                FROM way_tags wt
-                JOIN "Ways" w ON w.id = wt.way_id
-                """
-            )
-            res = conn.execute(query)
-
-            # Вставка в Properties для Points
-            query = text(
-                """INSERT INTO "Properties" (property)
-                SELECT DISTINCT *
+                SELECT DISTINCT k AS property
                 FROM
-                (SELECT DISTINCT nt.k
-                FROM node_tags nt
-                JOIN "Points" p ON p.id = nt.node_id
-                UNION
-                SELECT DISTINCT wt.k
-                FROM way_tags wt
-                JOIN "Ways" w ON w.id = wt.way_id
-                ) p
+                (
+                    SELECT DISTINCT nt.k
+                    FROM node_tags nt
+                    JOIN "Points" p ON p.id = nt.node_id
+                    UNION
+                    SELECT DISTINCT wt.k
+                    FROM way_tags wt
+                    JOIN "Ways" w ON w.id = wt.way_id
+                ) keys
+                WHERE NOT EXISTS (SELECT * FROM "Properties" pr WHERE keys.k = pr.property)
                 """
             )
             res = conn.execute(query)
@@ -467,12 +459,7 @@ async def graph_from_poly(city_id, polygon):
         AND (p.latitude BETWEEN {bbox[1]} AND {bbox[3]});
         """
     )
-    # query = text(
-    #     f"""SELECT "Points".id, "Points".longitude, "Points".latitude FROM 
-    #     (SELECT id_src FROM "Edges" JOIN 
-    #     (SELECT "Ways".id as way_id FROM "Ways" WHERE "Ways".id_city = {city_id})AS w ON "Edges".id_way = w.way_id) AS p JOIN "Points" ON p.id_src = "Points".id
-    #     WHERE "Points".longitude < {bbox[2]} and "Points".longitude > {bbox[0]} and "Points".latitude > {bbox[1]} and "Points".latitude < {bbox[3]};
-    #     """)
+
     res = await database.fetch_all(query)
     points = list(map(point_obj_to_list, res)) # [...[id, longitude, latitude]...]
 
@@ -486,30 +473,41 @@ async def graph_from_poly(city_id, polygon):
 
     road_types = ('motorway', 'trunk', 'primary', 'secondary', 'tertiary',
                   'motorway_link', 'trunk_link', 'primary_link', 'secondary_link', 'tertiary_link')
-    road_types_query = build_in_query('value', road_types)
-    query = text(
-        f"""WITH named_streets AS (
-            SELECT e.id AS id, e.id_way AS id_way, e.id_src AS id_src, e.id_dist AS id_dist, wp.value AS value
+    road_types_query = build_in_query('wp_h.value', road_types)
+    print("Start getting edges")
+    query = text(f"""
+        WITH named_streets AS 
+        (
+            SELECT 
+            e.id AS id, e.id_way AS id_way, e.id_src AS id_src, e.id_dist AS id_dist, wp_n.value AS value
             FROM "Edges" e 
-            JOIN "WayProperties" wp ON wp.id_way = e.id_way 
+            JOIN "WayProperties" wp_n 
+            ON wp_n.id_way = e.id_way
+            AND wp_n.id_property = {prop_id_name}
+            JOIN "WayProperties" wp_h 
+            ON wp_h.id_way = e.id_way
+            AND wp_h.id_property = {prop_id_highway}
             JOIN "Ways" w ON w.id = e.id_way 
             JOIN "Points" p ON p.id = e.id_src 
-            WHERE wp.id_property = {prop_id_name}
-            AND w.id_city = {city_id}
+            WHERE w.id_city = {city_id}
             AND (p.longitude BETWEEN {bbox[0]} AND {bbox[2]})
             AND (p.latitude BETWEEN {bbox[1]} AND {bbox[3]})
-        ),
-        unnamed_streets AS (
-            SELECT e.id AS id, e.id_way AS id_way, e.id_src AS id_src, e.id_dist AS id_dist, wp.value AS value
+        )
+        , unnamed_streets AS 
+        (
+            SELECT
+            e.id AS id, e.id_way AS id_way, e.id_src AS id_src, e.id_dist AS id_dist, NULL AS value
             FROM "Edges" e 
-            JOIN "WayProperties" wp ON wp.id_way = e.id_way 
             JOIN "Ways" w ON w.id = e.id_way 
-            JOIN "Points" p ON p.id = e.id_src 
-            WHERE e.id_way NOT IN (
-                SELECT id_way
-                FROM named_streets
-            )
-            AND (wp.id_property = {prop_id_highway} AND {road_types_query})
+            JOIN "Points" p ON p.id = e.id_src
+            LEFT JOIN "WayProperties" wp_n 
+            ON wp_n.id_way = e.id_way
+            AND wp_n.id_property = {prop_id_name}
+            JOIN "WayProperties" wp_h 
+            ON wp_h.id_way = e.id_way
+            AND wp_h.id_property = {prop_id_highway}
+            WHERE wp_n.value is NULL
+            and {road_types_query}
             AND w.id_city = {city_id}
             AND (p.longitude BETWEEN {bbox[0]} AND {bbox[2]})
             AND (p.latitude BETWEEN {bbox[1]} AND {bbox[3]})
@@ -517,24 +515,15 @@ async def graph_from_poly(city_id, polygon):
         SELECT id, id_way, id_src, id_dist, value
         FROM named_streets
         UNION
-        SELECT id, id_way, id_src, id_dist, NULL
-        FROM unnamed_streets
-        ;
-        """
+        SELECT id, id_way, id_src, id_dist, value
+        FROM unnamed_streets;
+    """
     )
-    # query = text(
-    #     f"""SELECT id, id_way, id_src, id_dist, value FROM 
-    #     (SELECT id, "Edges".id_way, id_src, id_dist, value FROM "Edges" JOIN 
-    #     (SELECT id_way, value FROM "WayProperties" WHERE id_property = {prop_id}) AS q ON "Edges".id_way = q.id_way) AS a JOIN 
-    #     (SELECT "Points".id as point_id FROM 
-    #     (SELECT id_src FROM "Edges" JOIN 
-    #     (SELECT "Ways".id as way_id FROM "Ways" WHERE "Ways".id_city = {city_id}) AS w ON "Edges".id_way = w.way_id) AS p JOIN "Points" ON
-    #     p.id_src = "Points".id WHERE "Points".longitude < {bbox[2]} and "Points".longitude > {bbox[0]} and "Points".latitude > {bbox[1]} and "Points".latitude < {bbox[3]}) AS b ON a.id_src = b.point_id; 
-    #     """)
+
     res = await database.fetch_all(query)
     edges = list(map(edge_obj_to_list, res)) # [...[id, id_way, from, to, name]...]
-    points, edges, ways_prop_ids, points_prop_ids  = filter_by_polygon(polygon=polygon, edges=edges, points=points)
 
+    points, edges, ways_prop_ids, points_prop_ids  = filter_by_polygon(polygon=polygon, edges=edges, points=points)
     conn = engine.connect()
 
     ids_ways = build_in_query('id_way', ways_prop_ids)

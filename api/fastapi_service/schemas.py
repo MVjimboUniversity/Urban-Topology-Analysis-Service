@@ -17,7 +17,7 @@ class PropertyBase(BaseModel):
 class CityBase(BaseModel):
     id : int 
     city_name : str 
-    property : Optional[PropertyBase] 
+    property : Optional[PropertyBase] = None
     downloaded : Optional[bool] = False
 
 class RegionBase(BaseModel):
