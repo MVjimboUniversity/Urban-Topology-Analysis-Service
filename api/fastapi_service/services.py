@@ -454,7 +454,7 @@ async def graph_from_poly(city_id, polygon):
     if city is None or not city.downloaded:
         return None, None, None, None
     query = text(
-        f"""SELECT p.id, p.longitude, p.latitude 
+        f"""SELECT DISTINCT p.id, p.longitude, p.latitude 
         FROM "Points" p
         JOIN "Edges" e ON e.id_src = p.id 
         JOIN "Ways" w ON e.id_way = w.id 
@@ -510,7 +510,7 @@ async def graph_from_poly(city_id, polygon):
             ON wp_h.id_way = e.id_way
             AND wp_h.id_property = {prop_id_highway}
             WHERE wp_n.value is NULL
-            and {unnamed_road_types_query}
+            AND {unnamed_road_types_query}
             AND w.id_city = {city_id}
             AND (p.longitude BETWEEN {bbox[0]} AND {bbox[2]})
             AND (p.latitude BETWEEN {bbox[1]} AND {bbox[3]})
