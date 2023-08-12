@@ -694,10 +694,6 @@ async def get_light_graph(df_nodes: DataFrame, df_edges: DataFrame, id_column: s
     node_ids = df_nodes[id_column]
     in_query_node_ids = build_in_query("p.id", node_ids)
 
-    # , p.longitude, p.latitude
-    # road_types = ('motorway', 'trunk', 'primary', 'secondary', 'tertiary',
-    #               'motorway_link', 'trunk_link', 'primary_link', 'secondary_link', 'tertiary_link')
-    # road_types_query = build_in_query('wp_h.value', road_types)
     query = text(
         f"""
         SELECT nodes_ids.id 
@@ -723,12 +719,58 @@ async def get_light_graph(df_nodes: DataFrame, df_edges: DataFrame, id_column: s
         WHERE {in_query_node_ids}
         """
     )
-
     res = await database.fetch_all(query)
     light_nodes_ids = list(map(lambda x: x.id, res))
 
     df_light_nodes = df_nodes.loc[df_nodes[id_column].isin(light_nodes_ids)]
 
-    df_start_edges = df_edges.loc[df_edges["source"].isin(light_nodes_ids)]
+    df_light_edges = pd.DataFrame(columns=["id_way", "source", "target", "weight"]) # DataFrame для итовогого списка ребер 
+    df_conn_pool = df_edges.loc[df_edges["source"].isin(df_light_nodes["id"])] # Пул ребер для соединения
+    # Список посещенных вершин. Этот список тормозит работу, но он нужен для работы. Так как встречается дороги, которые частично закольцованы.
+    # Т.е. только часть этих улиц является кольцом.
+    visited_list = (df_conn_pool["id_way"].astype("str") + "_" + df_conn_pool["source"].astype("str") + "_" + df_conn_pool["target"].astype("str")).to_list()
 
-    return df_light_nodes, df_start_edges
+    df_conn_pool = df_conn_pool.join(df_edges.set_index("source"), on="target", rsuffix="_target", how="inner") # JOIN
+    df_conn_pool = df_conn_pool.loc[df_conn_pool["id_way"] == df_conn_pool["id_way_target"]] # Удаляем объеты с разными id улиц
+    df_conn_pool = df_conn_pool.loc[df_conn_pool["source"] != df_conn_pool["target_target"]] # Удаляем объекты, которые ведут в стартовый узел
+    
+    df_conn_pool["weight"] = df_conn_pool.loc[:, "weight"] + df_conn_pool.loc[:, "weight_target"] # Вычисляем новый вес
+    
+    df_conn_pool = df_conn_pool.loc[:, ["id_way", "source", "target", "target_target", "weight"]]
+    df_conn_pool = df_conn_pool.rename({"target": "previous", "target_target": "target"}, axis=1)
+    # Добавляем ребра, которые в конечном узле пришли в перекресток
+    df_light_edges = pd.concat([
+                                df_light_edges, 
+                                df_conn_pool.loc[df_conn_pool["target"].isin(df_light_nodes["id"]), ["id_way", "source", "target", "weight"]]
+                                ]
+                               , axis=0, ignore_index=True)
+    # И удаляем их из пула
+    df_conn_pool = df_conn_pool.loc[~df_conn_pool["target"].isin(df_light_nodes["id"])]
+    # Обновляем список посещенных вершин
+    visited_list.extend((df_conn_pool["id_way"].astype("str") + "_" + df_conn_pool["source"].astype("str") + "_" + df_conn_pool["target"].astype("str")).to_list())
+    while not df_conn_pool.empty: # Повторяем тоже самое, что и выше, пока пул не окажется пустым
+        df_conn_pool = df_conn_pool.join(df_edges.set_index("source"), on="target", rsuffix="_target", how="inner")
+        df_conn_pool = df_conn_pool.loc[df_conn_pool["id_way"] == df_conn_pool["id_way_target"]]
+        df_conn_pool = df_conn_pool.loc[df_conn_pool["source"] != df_conn_pool["target_target"]]
+        df_conn_pool = df_conn_pool.loc[df_conn_pool["previous"] != df_conn_pool["target_target"]]
+        df_conn_pool = df_conn_pool.loc[~(df_conn_pool["id_way"].astype("str") + "_" + df_conn_pool["source"].astype("str") + 
+                                          "_" + df_conn_pool["target_target"].astype("str")).isin(visited_list)]
+        
+        df_conn_pool["weight"] = df_conn_pool.loc[:, "weight"] + df_conn_pool.loc[:, "weight_target"]
+        
+        df_conn_pool = df_conn_pool.loc[:, ["id_way", "source", "target", "target_target", "weight"]]
+        df_conn_pool = df_conn_pool.rename({"target": "previous", "target_target": "target"}, axis=1)
+        
+        df_light_edges = pd.concat([
+                                    df_light_edges, 
+                                    df_conn_pool.loc[df_conn_pool["target"].isin(df_light_nodes["id"]), ["id_way", "source", "target", "weight"]]
+                                    ]
+                                   , axis=0, ignore_index=True)
+        df_conn_pool = df_conn_pool.loc[~df_conn_pool["target"].isin(df_light_nodes["id"])]
+        
+        visited_list.extend((df_conn_pool["id_way"].astype("str") + "_" + df_conn_pool["source"].astype("str") + "_" + df_conn_pool["target"].astype("str")).to_list())
+
+    # Находим ребра с минимальным весом для каждой пары начало -> конец
+    unique_edges = df_light_edges[["source", "target", "weight"]].groupby(by=["source", "target"], as_index=False).min().set_index(["source", "target", "weight"])
+    df_light_edges = df_light_edges.join(unique_edges, on=["source", "target", "weight"], how="inner") # Находим соответствующий ей id пути
+    return df_light_nodes, df_light_edges
