@@ -9,3 +9,4 @@ pandas
 osmnx
 dadata
 osmium
+haversine
