@@ -8,7 +8,7 @@ from shapely.geometry.linestring import LineString
 from shapely.geometry.polygon import Polygon
 from shapely.ops import unary_union
 from geopandas.geodataframe import GeoDataFrame
-from pandas.core.frame import DataFrame
+from pandas import DataFrame
 from osm_handler import parse_osm
 from typing import List, Iterable, Union, TYPE_CHECKING
 from sqlalchemy import update, text
@@ -20,7 +20,8 @@ import ast
 import io
 import pandas as pd
 import networkx as nx
-import time
+import haversine as hs
+
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -44,37 +45,40 @@ def point_to_scheme(point : Point) -> PointBase:
     return PointBase(latitude=point.latitude, longitude=point.longitude)
 
 
-def list_to_csv_str(data, columns : List['str']):
+def list_to_csv_str(data: list[list], columns : list[str]) -> tuple[str, DataFrame]:
     buffer = io.StringIO()
     df = pd.DataFrame(data, columns=columns)
     df.to_csv(buffer, index=False)
     return buffer.getvalue(), df
 
 
-def reversed_graph_to_csv_str(edges_df : DataFrame):
-    redges_df, rnodes_df = get_reversed_graph(edges_df, "id_way")
-
-    redges = io.StringIO()
-    rnodes = io.StringIO()
-    # rmatrix = io.StringIO()
-
-    redges_df.to_csv(redges, index=False)
-    rnodes_df.to_csv(rnodes, index=False)
-    # rmatrix_df.to_csv(rmatrix, index=False)
-    return redges.getvalue(), rnodes.getvalue()
+def df_to_csv_str(df: DataFrame) -> str:
+    buffer = io.StringIO()
+    df.to_csv(buffer, index=False)
+    return buffer.getvalue()
 
 
-def graph_to_scheme(points, edges, pprop, wprop) -> GraphBase:
-    edges_str, edges_df = list_to_csv_str(edges, ['id', 'id_way', 'source', 'target', 'name'])
-    points_str, _ = list_to_csv_str(points, ['id', 'longitude', 'latitude'])
-    pprop_str, _ = list_to_csv_str(pprop, ['id', 'property', 'value'])
+async def graph_to_scheme(nodes, edges, pprop, wprop) -> GraphBase:
+    nodes_str, df_nodes = list_to_csv_str(nodes, ['id', 'longitude', 'latitude'])
+    # light_nodes_str, df_light_nodes = list_to_csv_str(light_nodes, ['id', 'longitude', 'latitude'])
+    df_edges = pd.DataFrame(edges, columns=['id', 'id_way', 'source', 'target', 'name'])
+    df_edges = df_weighted(df_nodes, df_edges)
+    edges_str = df_to_csv_str(df_edges)
+    nprop_str, _ = list_to_csv_str(pprop, ['id', 'property', 'value'])
     wprop_str, _ = list_to_csv_str(wprop, ['id', 'property', 'value'])
 
-    r_edges_str, r_nodes_str = reversed_graph_to_csv_str(edges_df)
+    df_reversed_nodes, df_reversed_edges = get_reversed_graph(df_edges, "id_way")
+    reversed_nodes_str = df_to_csv_str(df_reversed_nodes)
+    reversed_edges_str = df_to_csv_str(df_reversed_edges)
 
-    return GraphBase(edges_csv=edges_str, points_csv=points_str, 
-                     ways_properties_csv=wprop_str, points_properties_csv=pprop_str,
-                     reversed_edges_csv=r_edges_str, reversed_nodes_csv=r_nodes_str)
+    df_light_nodes, df_light_edges = await get_light_graph(df_nodes, df_edges)
+    df_light_nodes_str = df_to_csv_str(df_light_nodes)
+    df_light_edges_str = df_to_csv_str(df_light_edges)
+
+    return GraphBase(edges_csv=edges_str, points_csv=nodes_str, 
+                     ways_properties_csv=wprop_str, points_properties_csv=nprop_str,
+                     reversed_edges_csv=reversed_edges_str, reversed_nodes_csv=reversed_nodes_str,
+                     light_edges_csv=df_light_edges_str, light_points_csv=df_light_nodes_str)
                     #  reversed_matrix_csv=r_matrix_str)
 
 
@@ -461,7 +465,7 @@ async def graph_from_poly(city_id, polygon):
     )
 
     res = await database.fetch_all(query)
-    points = list(map(point_obj_to_list, res)) # [...[id, longitude, latitude]...]
+    nodes = list(map(point_obj_to_list, res)) # [...[id, longitude, latitude]...]
 
     q = PropertyAsync.select().where(PropertyAsync.c.property == 'name')
     prop = await database.fetch_one(q)
@@ -471,10 +475,9 @@ async def graph_from_poly(city_id, polygon):
     prop = await database.fetch_one(q)
     prop_id_highway = prop.id
 
-    road_types = ('motorway', 'trunk', 'primary', 'secondary', 'tertiary',
+    unnamed_road_types = ('motorway', 'trunk', 'primary', 'secondary', 'tertiary',
                   'motorway_link', 'trunk_link', 'primary_link', 'secondary_link', 'tertiary_link')
-    road_types_query = build_in_query('wp_h.value', road_types)
-    print("Start getting edges")
+    unnamed_road_types_query = build_in_query('wp_h.value', unnamed_road_types)
     query = text(f"""
         WITH named_streets AS 
         (
@@ -507,7 +510,7 @@ async def graph_from_poly(city_id, polygon):
             ON wp_h.id_way = e.id_way
             AND wp_h.id_property = {prop_id_highway}
             WHERE wp_n.value is NULL
-            and {road_types_query}
+            and {unnamed_road_types_query}
             AND w.id_city = {city_id}
             AND (p.longitude BETWEEN {bbox[0]} AND {bbox[2]})
             AND (p.latitude BETWEEN {bbox[1]} AND {bbox[3]})
@@ -523,8 +526,19 @@ async def graph_from_poly(city_id, polygon):
     res = await database.fetch_all(query)
     edges = list(map(edge_obj_to_list, res)) # [...[id, id_way, from, to, name]...]
 
-    points, edges, ways_prop_ids, points_prop_ids  = filter_by_polygon(polygon=polygon, edges=edges, points=points)
+    nodes, edges, nodes_prop_ids, ways_prop_ids  = filter_by_polygon(polygon=polygon, nodes=nodes, edges=edges)
+
     conn = engine.connect()
+
+    ids_nodes = build_in_query('id_point', nodes_prop_ids)
+    query = text(
+        f"""SELECT id_point, property, value FROM 
+        (SELECT id_point, id_property, value FROM "PointProperties" WHERE {ids_nodes}) AS p 
+        JOIN "Properties" ON p.id_property = "Properties".id;
+        """)
+
+    res = conn.execute(query).fetchall()
+    nodes_prop = list(map(record_obj_to_pprop, res))
 
     ids_ways = build_in_query('id_way', ways_prop_ids)
     query = text(
@@ -536,19 +550,9 @@ async def graph_from_poly(city_id, polygon):
     res = conn.execute(query).fetchall()
     ways_prop = list(map(record_obj_to_wprop, res))
 
-    ids_points = build_in_query('id_point', points_prop_ids)
-    query = text(
-        f"""SELECT id_point, property, value FROM 
-        (SELECT id_point, id_property, value FROM "PointProperties" WHERE {ids_points}) AS p 
-        JOIN "Properties" ON p.id_property = "Properties".id;
-        """)
-
-    res = conn.execute(query).fetchall()
-    points_prop = list(map(record_obj_to_pprop, res))
-
     conn.close()
 
-    return points, edges, points_prop, ways_prop    
+    return nodes, edges, nodes_prop, ways_prop   
 
 
 def build_in_query(query_field : str, values : Iterable[Union[int, str]]):
@@ -565,27 +569,39 @@ def build_in_query(query_field : str, values : Iterable[Union[int, str]]):
     # return ""
 
 
-def filter_by_polygon(polygon, edges, points):
-    points_ids = set()
+def filter_by_polygon(polygon, nodes, edges=None):
+    nodes_ids = set()
     ways_prop_ids = set()
-    points_filtred = []
+    nodes_filtred = []
     edges_filtred = []
 
-    for point in points:
-        lon = point[1]
-        lat = point[2]
+    for node in nodes:
+        lon = node[1]
+        lat = node[2]
         if polygon.contains(ShapelyPoint(lon, lat)):
-            points_ids.add(point[0])
-            points_filtred.append(point)
+            nodes_ids.add(node[0])
+            nodes_filtred.append(node)
 
-    for edge in edges:
-        id_from = edge[2]
-        id_to = edge[3]
-        if (id_from in points_ids) and (id_to in points_ids):
-            edges_filtred.append(edge)
-            ways_prop_ids.add(edge[1])
+    if edges:
+        for edge in edges:
+            id_from = edge[2]
+            id_to = edge[3]
+            if (id_from in nodes_ids) and (id_to in nodes_ids):
+                edges_filtred.append(edge)
+                ways_prop_ids.add(edge[1])
+        return nodes_filtred, edges_filtred, nodes_ids, ways_prop_ids
+    
+    return nodes_filtred, nodes_ids
 
-    return points_filtred, edges_filtred, ways_prop_ids, points_ids
+
+def df_weighted(df_nodes: DataFrame, df_edges: DataFrame) -> DataFrame:
+    df_edges = df_edges.join(df_nodes.set_index("id"), on="source", how="inner")
+    df_edges = df_edges.rename(columns={"longitude": "longitude_source", "latitude": "latitude_source"})
+    df_edges = df_edges.join(df_nodes.set_index("id"), on="target")
+    df_edges = df_edges.rename(columns={"longitude": "longitude_target", "latitude": "latitude_target"})
+    df_edges["weight"] = df_edges.apply(lambda x: hs.haversine((x["latitude_source"], x["longitude_source"]), (x["latitude_target"], x["longitude_target"]), unit=hs.Unit.METERS), axis=1)
+    df_edges = df_edges[["id_way", "source", "target", "weight"]]
+    return df_edges
 
 
 def squeeze_graph(df_original: DataFrame) -> DataFrame:
@@ -615,7 +631,7 @@ def squeeze_graph(df_original: DataFrame) -> DataFrame:
     return df
 
 
-def get_reversed_graph(graph: DataFrame, way_column: str):
+def get_reversed_graph(graph: DataFrame, way_column: str) -> tuple[DataFrame, DataFrame]:
     way_ids = graph[way_column]
     in_query_way_ids = build_in_query("w.id", way_ids)
 
@@ -664,12 +680,55 @@ def get_reversed_graph(graph: DataFrame, way_column: str):
     df_street_way = pd.concat([df_named_pairs[["street_name1", "id_way1"]], \
                                df_named_pairs[["street_name2", "id_way2"]].rename(columns={"street_name2": "street_name1", "id_way2": "id_way1"})]).drop_duplicates().reset_index(drop=True)
     
-    nodes_df = df_street_way.groupby("street_name1", group_keys=False).agg(lambda x: set(x)).reset_index().rename(columns={"street_name1": "street_name", "id_way1": "id_way"}).reset_index()
+    df_nodes = df_street_way.groupby("street_name1", group_keys=False).agg(lambda x: set(x)).reset_index().rename(columns={"street_name1": "street_name", "id_way1": "id_way"}).reset_index()
 
     # Получение связей улиц
     df_connections = squeeze_graph(df)
-    df_connections = df_connections.join(nodes_df[["index", "street_name"]].set_index("street_name"), on="street_name1", how="inner").rename(columns={"index": "src_index"})
-    df_connections = df_connections.join(nodes_df[["index", "street_name"]].set_index("street_name"), on="street_name2", how="inner").rename(columns={"index": "dest_index"})
-    edges_df = df_connections[["src_index", "dest_index"]].drop_duplicates().reset_index(drop=True)
-    return edges_df, nodes_df
+    df_connections = df_connections.join(df_nodes[["index", "street_name"]].set_index("street_name"), on="street_name1", how="inner").rename(columns={"index": "src_index"})
+    df_connections = df_connections.join(df_nodes[["index", "street_name"]].set_index("street_name"), on="street_name2", how="inner").rename(columns={"index": "dest_index"})
+    df_edges = df_connections[["src_index", "dest_index"]].drop_duplicates().reset_index(drop=True)
+    return df_nodes, df_edges
 
+
+async def get_light_graph(df_nodes: DataFrame, df_edges: DataFrame, id_column: str="id") -> tuple[DataFrame, DataFrame]:
+    node_ids = df_nodes[id_column]
+    in_query_node_ids = build_in_query("p.id", node_ids)
+
+    # , p.longitude, p.latitude
+    # road_types = ('motorway', 'trunk', 'primary', 'secondary', 'tertiary',
+    #               'motorway_link', 'trunk_link', 'primary_link', 'secondary_link', 'tertiary_link')
+    # road_types_query = build_in_query('wp_h.value', road_types)
+    query = text(
+        f"""
+        SELECT nodes_ids.id 
+        FROM
+        (
+            SELECT e1.id_src AS id
+            FROM "Edges" e1
+            JOIN "Edges" e2 ON e1.id_src = e2.id_src AND e1.id_way <> e2.id_way
+            UNION
+            SELECT e1.id_dist AS id
+            FROM "Edges" e1
+            JOIN "Edges" e2 ON e1.id_dist = e2.id_src AND e1.id_way <> e2.id_way
+            UNION
+            SELECT e1.id_dist AS id
+            FROM "Edges" e1
+            JOIN "Edges" e2 ON e1.id_dist = e2.id_dist AND e1.id_way <> e2.id_way
+            UNION
+            SELECT e1.id_src AS id
+            FROM "Edges" e1
+            JOIN "Edges" e2 ON e1.id_src = e2.id_dist AND e1.id_way <> e2.id_way
+        ) nodes_ids
+        JOIN "Points" p ON p.id = nodes_ids.id
+        WHERE {in_query_node_ids}
+        """
+    )
+
+    res = await database.fetch_all(query)
+    light_nodes_ids = list(map(lambda x: x.id, res))
+
+    df_light_nodes = df_nodes.loc[df_nodes[id_column].isin(light_nodes_ids)]
+
+    df_start_edges = df_edges.loc[df_edges["source"].isin(light_nodes_ids)]
+
+    return df_light_nodes, df_start_edges
