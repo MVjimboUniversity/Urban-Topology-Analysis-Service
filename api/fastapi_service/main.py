@@ -103,16 +103,16 @@ async def city_graph(
     status_code = 200
     detail = "OK"
 
-    points, edges, pprop, wprop  = await services.graph_from_ids(city_id=city_id, regions_ids=regions_ids, regions=regions_df)
+    nodes, edges, pprop, wprop  = await services.graph_from_ids(city_id=city_id, regions_ids=regions_ids, regions=regions_df)
     
-    if points is None:
+    if nodes is None:
         status_code = 404
         detail = "NOT FOUND"
         logger.error(f"{request} {status_code} {detail}")
         raise HTTPException(status_code=status_code, detail=detail)
 
     logger.info(f"{request} {status_code} {detail}")
-    return services.graph_to_scheme(points, edges, pprop, wprop)
+    return await services.graph_to_scheme(nodes, edges, pprop, wprop)
 
 
 @app.post('/api/city/graph/bbox/{city_id}/', response_model=GraphBase)
