@@ -72,13 +72,13 @@ async def graph_to_scheme(nodes, edges, pprop, wprop) -> GraphBase:
     reversed_edges_str = df_to_csv_str(df_reversed_edges)
 
     df_light_nodes, df_light_edges = await get_light_graph(df_nodes, df_edges)
-    df_light_nodes_str = df_to_csv_str(df_light_nodes)
-    df_light_edges_str = df_to_csv_str(df_light_edges)
+    light_nodes_str = df_to_csv_str(df_light_nodes)
+    light_edges_str = df_to_csv_str(df_light_edges)
 
     return GraphBase(edges_csv=edges_str, points_csv=nodes_str, 
                      ways_properties_csv=wprop_str, points_properties_csv=nprop_str,
                      reversed_edges_csv=reversed_edges_str, reversed_nodes_csv=reversed_nodes_str,
-                     light_edges_csv=df_light_edges_str, light_points_csv=df_light_nodes_str)
+                     light_edges_csv=light_edges_str, light_points_csv=light_nodes_str)
                     #  reversed_matrix_csv=r_matrix_str)
 
 
