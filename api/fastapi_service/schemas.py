@@ -33,8 +33,6 @@ class GraphBase(BaseModel):
     points_properties_csv : str
     reversed_edges_csv : str
     reversed_nodes_csv : str
-    light_edges_csv : str
-    light_points_csv :str
     # reversed_matrix_csv : str
 
 
