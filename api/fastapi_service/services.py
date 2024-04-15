@@ -630,20 +630,33 @@ def get_reversed_graph(graph: DataFrame, way_column: str):
                 JOIN "Properties" p ON wp.id_property = p.id
             WHERE p.property = 'name'
         )
+        , way_types AS
+        (
+            SELECT 
+                wp.id_way,
+                wp.value AS type
+            FROM "WayProperties" wp
+                JOIN "Properties" p ON wp.id_property = p.id
+            WHERE p.property = 'highway'  
+        )
         , city_way_names AS
         (
             SELECT 
                 w.id,
-                wn.name
+                wn.name,
+                wt.type
             FROM "Ways" w
                 LEFT JOIN way_names wn ON w.id = wn.id_way
+                LEFT JOIN way_types wt ON w.id = wt.id_way
             WHERE {in_query_way_ids}
         )
         SELECT 
             e1.id_dist AS crossroad,
             wn1.name AS street_name1,
+            wn1.type AS street_type1,
             wn1.id AS id_way1,
             wn2.name AS street_name2,
+            wn2.type AS street_type2,
             wn2.id AS id_way2
         FROM "Edges" e1
         JOIN "Edges" e2 ON e1.id_src = e2.id_dist AND e1.id_way <> e2.id_way

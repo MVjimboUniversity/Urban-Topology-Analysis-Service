@@ -9,4 +9,8 @@ api/cities_osm/*.osm
 *.pbf
 properties
 *.pbf
-analytics/
+analytics/*.json
+analytics/.devcontainer
+analytics/*/*.png
+analytics/*.zip
+analytics/*.csv
